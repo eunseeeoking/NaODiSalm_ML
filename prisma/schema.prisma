@@ -1,6 +1,6 @@
 // 2026_MOLIT_ML 의 Prisma 스키마
 //
-// ⚠️ server (2026_MOLIT_CONTEST) 의 schema 와 같은 DB 를 가리킨다.
+// server (2026_MOLIT_CONTEST) 의 schema 와 같은 DB 를 가리킨다.
 //    - 다른 모델(t_user, t_apt_complex 등)은 server 가 owner — ML 은 read-only 로 사용
 //    - TrainingResult 는 ML 의 책임 영역 — `prisma db push` 로 신규 테이블만 생성
 //
@@ -88,26 +88,186 @@ model AptRent {
 }
 
 // ──────────────────────────────────────────────────────────────
+//  비-아파트 전월세 (server 가 owner — ML 은 read-only)
+//  오피스텔/연립다세대/단독다가구. 청년 전월세 학습 입력으로 사용.
+// ──────────────────────────────────────────────────────────────
+
+model OffiComplex {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(120)
+  sigunguCode String   @map("sigungu_code") @db.VarChar(5)
+  legalDong   String   @map("legal_dong") @db.VarChar(60)
+  jibun       String?  @db.VarChar(60)
+  roadAddr    String?  @map("road_addr") @db.VarChar(200)
+  builtYear   Int?     @map("built_year")
+  lat         Float?
+  lng         Float?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  trades OffiTrade[]
+  rents  OffiRent[]
+
+  @@unique([sigunguCode, legalDong, name, builtYear], map: "uniq_offi_complex")
+  @@index([sigunguCode, legalDong])
+  @@map("t_offi_complex")
+}
+
+model OffiTrade {
+  id          Int      @id @default(autoincrement())
+  complexId   Int      @map("complex_id")
+  dealDate    DateTime @map("deal_date") @db.Date
+  priceManwon Int      @map("price_manwon")
+  areaM2      Float    @map("area_m2")
+  floor       Int?
+  builtYear   Int?     @map("built_year")
+  rawPayload  Json?    @map("raw_payload")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  complex OffiComplex @relation(fields: [complexId], references: [id], onDelete: Cascade)
+
+  @@unique([complexId, dealDate, areaM2, floor, priceManwon], map: "uniq_offi_trade")
+  @@index([complexId, dealDate])
+  @@map("t_offi_trade")
+}
+
+model OffiRent {
+  id            Int      @id @default(autoincrement())
+  complexId     Int      @map("complex_id")
+  contractDate  DateTime @map("contract_date") @db.Date
+  depositManwon Int      @map("deposit_manwon")
+  monthlyManwon Int      @default(0) @map("monthly_manwon")
+  contractType  RentType @map("contract_type")
+  areaM2        Float    @map("area_m2")
+  floor         Int?
+  builtYear     Int?     @map("built_year")
+  rawPayload    Json?    @map("raw_payload")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  complex OffiComplex @relation(fields: [complexId], references: [id], onDelete: Cascade)
+
+  @@unique([complexId, contractDate, areaM2, floor, depositManwon, monthlyManwon], map: "uniq_offi_rent")
+  @@index([complexId, contractDate])
+  @@map("t_offi_rent")
+}
+
+model VillaComplex {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(120)
+  sigunguCode String   @map("sigungu_code") @db.VarChar(5)
+  legalDong   String   @map("legal_dong") @db.VarChar(60)
+  jibun       String?  @db.VarChar(60)
+  roadAddr    String?  @map("road_addr") @db.VarChar(200)
+  builtYear   Int?     @map("built_year")
+  lat         Float?
+  lng         Float?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  trades VillaTrade[]
+  rents  VillaRent[]
+
+  @@unique([sigunguCode, legalDong, name, builtYear], map: "uniq_villa_complex")
+  @@index([sigunguCode, legalDong])
+  @@map("t_villa_complex")
+}
+
+model VillaTrade {
+  id          Int      @id @default(autoincrement())
+  complexId   Int      @map("complex_id")
+  dealDate    DateTime @map("deal_date") @db.Date
+  priceManwon Int      @map("price_manwon")
+  areaM2      Float    @map("area_m2")
+  floor       Int?
+  builtYear   Int?     @map("built_year")
+  rawPayload  Json?    @map("raw_payload")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  complex VillaComplex @relation(fields: [complexId], references: [id], onDelete: Cascade)
+
+  @@unique([complexId, dealDate, areaM2, floor, priceManwon], map: "uniq_villa_trade")
+  @@index([complexId, dealDate])
+  @@map("t_villa_trade")
+}
+
+model VillaRent {
+  id            Int      @id @default(autoincrement())
+  complexId     Int      @map("complex_id")
+  contractDate  DateTime @map("contract_date") @db.Date
+  depositManwon Int      @map("deposit_manwon")
+  monthlyManwon Int      @default(0) @map("monthly_manwon")
+  contractType  RentType @map("contract_type")
+  areaM2        Float    @map("area_m2")
+  floor         Int?
+  builtYear     Int?     @map("built_year")
+  rawPayload    Json?    @map("raw_payload")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  complex VillaComplex @relation(fields: [complexId], references: [id], onDelete: Cascade)
+
+  @@unique([complexId, contractDate, areaM2, floor, depositManwon, monthlyManwon], map: "uniq_villa_rent")
+  @@index([complexId, contractDate])
+  @@map("t_villa_rent")
+}
+
+model ShComplex {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(120)
+  sigunguCode String   @map("sigungu_code") @db.VarChar(5)
+  legalDong   String   @map("legal_dong") @db.VarChar(60)
+  jibun       String?  @db.VarChar(60)
+  roadAddr    String?  @map("road_addr") @db.VarChar(200)
+  builtYear   Int?     @map("built_year")
+  lat         Float?
+  lng         Float?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  rents ShRent[]
+
+  @@unique([sigunguCode, legalDong, name, builtYear], map: "uniq_sh_complex")
+  @@index([sigunguCode, legalDong])
+  @@map("t_sh_complex")
+}
+
+model ShRent {
+  id            Int      @id @default(autoincrement())
+  complexId     Int      @map("complex_id")
+  contractDate  DateTime @map("contract_date") @db.Date
+  depositManwon Int      @map("deposit_manwon")
+  monthlyManwon Int      @default(0) @map("monthly_manwon")
+  contractType  RentType @map("contract_type")
+  areaM2        Float    @map("area_m2")
+  floor         Int?
+  builtYear     Int?     @map("built_year")
+  rawPayload    Json?    @map("raw_payload")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  complex ShComplex @relation(fields: [complexId], references: [id], onDelete: Cascade)
+
+  @@unique([complexId, contractDate, areaM2, floor, depositManwon, monthlyManwon], map: "uniq_sh_rent")
+  @@index([complexId, contractDate])
+  @@map("t_sh_rent")
+}
+
+// ──────────────────────────────────────────────────────────────
 //  ML 책임 영역 — t_training_result
 // ──────────────────────────────────────────────────────────────
 
 enum AreaBucket {
-  SMALL        /// ≤60㎡
-  MEDIUM       /// 60~85㎡
-  LARGE_MID    /// 85~135㎡
-  LARGE        /// >135㎡
+  SMALL
+  MEDIUM
+  LARGE_MID
+  LARGE
 }
 
 enum AgeBucket {
-  NEW          /// ≤10년
-  SEMI_NEW     /// 10~20년
-  MID          /// 20~30년
-  OLD          /// >30년
+  NEW
+  SEMI_NEW
+  MID
+  OLD
 }
 
-/// LSTM 학습 결과 (t_training_result)
-///  - 단지 단위로 학습 (complex_id 채움) OR 구간 집계 단위로 학습 (complex_id null)
-///  - 같은 모델 버전 + 같은 base_date + 같은 키 조합은 1 row 만 유지
 model TrainingResult {
   id                    Int        @id @default(autoincrement())
   complexId             Int?       @map("complex_id")
@@ -115,14 +275,14 @@ model TrainingResult {
   legalDong             String     @map("legal_dong") @db.VarChar(60)
   areaBucket            AreaBucket @map("area_bucket")
   ageBucket             AgeBucket  @map("age_bucket")
-  baseDate              DateTime   @map("base_date") @db.Date /// 학습 기준일 (마지막 데이터 시점)
-  currentPricePerM2     Float      @map("current_price_per_m2") /// 만원/㎡
+  baseDate              DateTime   @map("base_date") @db.Date
+  currentPricePerM2     Float      @map("current_price_per_m2")
   predicted1yPricePerM2 Float?     @map("predicted_1y_price_per_m2")
   predicted3yPricePerM2 Float?     @map("predicted_3y_price_per_m2")
-  expectedReturn3y      Float?     @map("expected_return_3y") /// %
-  confidence            Float? /// 0~1
-  mae                   Float? /// 검증 MAE
-  mape                  Float? /// 검증 MAPE (%)
+  expectedReturn3y      Float?     @map("expected_return_3y")
+  confidence            Float?
+  mae                   Float?
+  mape                  Float?
   sampleCount           Int        @map("sample_count")
   modelVersion          String     @map("model_version") @db.VarChar(40)
   modelMeta             Json?      @map("model_meta")

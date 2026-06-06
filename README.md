@@ -1,6 +1,6 @@
-# NaODiSalm_ML
+# 나어디삶 ML — LSTM 가격 예측 학습 파이프라인
 
-스마트 직세권 — **LSTM 가격 예측 학습 파이프라인** (로컬 전용).
+**나어디삶**([데이터 기반 청년 주거 의사결정 플랫폼](https://github.com/eunseeeoking/NaODiSalm_Main))의 **LSTM 가격 예측 학습 파이프라인** (로컬 전용).
 
 같은 MySQL DB (`molit_contest`) 를 보고, 거래 시계열을 학습해 **t_training_result** 에 결과를 저장합니다. [NaODiSalm_Main](https://github.com/eunseeeoking/NaODiSalm_Main) (Vercel/Render 배포) 와 분리된 별도 레포 — 클라우드 무료 호스팅의 메모리/CPU 한계를 회피하기 위해 학습은 로컬 PC 에서 무한 루프로 수행합니다.
 
