@@ -2,7 +2,7 @@
   "name": "molit-ml",
   "private": true,
   "version": "0.1.0",
-  "description": "2026 MOLIT Contest - LSTM training pipeline (separated repo)",
+  "description": "2026 MOLIT Contest - 나어디삶 가격 예측 백테스트(ARIMA 채택) + LSTM 학습 파이프라인 (separated repo)",
   "type": "commonjs",
   "scripts": {
     "prisma:generate": "prisma generate",

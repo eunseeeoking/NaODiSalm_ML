@@ -9,8 +9,13 @@
 |------|------|------|
 | MA-12 | `ma12.ts` | 12개월 이동평균 + 선형 트렌드 외삽 |
 | ARIMA(2,1,2) | `scripts/backtest/arima.py` | statsmodels (Python) |
-| LSTM | `lstmEval.ts` | TensorFlow.js, recursive multi-step (horizon=1 학습 후 36회 반복) |
+| LSTM | `lstmEval.ts` | TensorFlow.js, 레벨·recursive multi-step (horizon=1 학습 후 36회 반복) |
 | **LSTM-REB** ★ | `lstmEval.ts` + `rebNormalize.ts` | LSTM + R-ONE 지수 정규화 (시장 추세 노이즈 제거) — `BACKTEST_REB_NORMALIZE=1` 토글 |
+| LSTM-RET | `lstmEval.ts` `predictLstmReturns` | 실험 1 — 로그수익률 표현(차분), recursive — `BACKTEST_RETURNS_SPACE=1` |
+| LSTM-DIR / LSTM-RET-DIR | `lstmEval.ts` `predictLstmDirect` | 실험 3 — direct multi-horizon(recursive 제거), 레벨·수익률 양쪽 — `BACKTEST_DIRECT=1` |
+| ARIMA-ND | `scripts/backtest/arima.py` | 교차검증 — 차분 제거 ARIMA(2,0,2) — `ARIMA_NO_DIFF=1` |
+
+> 2×2(표현 × 예측방식) 실험의 결론·수치는 루트 [`README.md`](../../README.md) 의 “LSTM은 왜 졌나” 참조.
 
 ## 실행 흐름
 
@@ -52,8 +57,8 @@ reports/
 
 ```
 BACKTEST_TOP_N=5         단지 수 (기본 5)
-BACKTEST_HORIZON=36      평가 horizon 개월 (기본 36)
-BACKTEST_MIN_TRAIN=48    최소 train 개월 (기본 48)
+BACKTEST_HORIZON=24      평가 horizon 개월 (기본 24, 커밋 산출물은 36)
+BACKTEST_MIN_TRAIN=36    최소 train 개월 (기본 36)
 BACKTEST_LSTM_EPOCHS=30  LSTM epochs (기본 30)
 BACKTEST_REB_NORMALIZE=1 R-ONE 정규화 LSTM 추가 평가 (기본 off)
                          → LSTM-REB 행이 backtest_results.csv 에 추가
@@ -62,7 +67,13 @@ BACKTEST_REB_NORMALIZE=1 R-ONE 정규화 LSTM 추가 평가 (기본 off)
                          → 예측 흐름: train series ÷ R-ONE index → z-score → LSTM
                                     → z 복원 → × (train 마지막 ym index / 100)
                          → 정규화 효과 측정: LSTM vs LSTM-REB MAPE 직접 비교
+BACKTEST_RETURNS_SPACE=1 실험 1 — 로그수익률 표현 LSTM-RET 행 추가 (기본 off)
+BACKTEST_DIRECT=1        실험 3 — direct multi-horizon LSTM-DIR·LSTM-RET-DIR 행 추가 (기본 off)
 ```
+
+> 2×2 통제실험은 `BACKTEST_RETURNS_SPACE=1 BACKTEST_DIRECT=1` 동시 지정 시
+> LSTM(레벨·rec)·LSTM-RET(수익률·rec)·LSTM-DIR(레벨·dir)·LSTM-RET-DIR(수익률·dir)
+> 4행이 함께 적재되어 {표현}×{예측방식} 비교가 완성된다. 결론은 루트 README 참조.
 
 ## 평가 지표
 
