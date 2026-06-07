@@ -33,6 +33,10 @@ from pathlib import Path
 
 import matplotlib
 
+# Windows cp949 콘솔에서 em-dash(—)·· 등 출력 시 UnicodeEncodeError 방지
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 matplotlib.use("Agg")  # 서버/CLI 환경에서 PNG 저장만
 import matplotlib.pyplot as plt
 import numpy as np
@@ -60,11 +64,19 @@ COMPLEXES_CSV = REPORTS / "complexes.csv"
 MODEL_STYLE = {
     "MA-12":    {"color": "#9CA3AF", "linestyle": "--", "linewidth": 1.8, "label": "MA-12"},
     "ARIMA":    {"color": "#3B82F6", "linestyle": "-.", "linewidth": 1.8, "label": "ARIMA(2,1,2)"},
-    "LSTM":     {"color": "#F97316", "linestyle": "-",  "linewidth": 2.2, "label": "LSTM"},
-    "LSTM-REB": {"color": "#10B981", "linestyle": "-",  "linewidth": 2.4, "label": "LSTM + R-ONE 정규화"},
+    "ARIMA-ND": {"color": "#06B6D4", "linestyle": ":",  "linewidth": 1.8, "label": "ARIMA(2,0,2) 차분제거"},
+    "LSTM":         {"color": "#F97316", "linestyle": "-",  "linewidth": 2.2, "label": "LSTM (레벨·recursive)"},
+    "LSTM-RET":     {"color": "#8B5CF6", "linestyle": "-",  "linewidth": 2.4, "label": "LSTM (수익률·recursive)"},
+    "LSTM-DIR":     {"color": "#EAB308", "linestyle": "-",  "linewidth": 2.2, "label": "LSTM (레벨·direct)"},
+    "LSTM-RET-DIR": {"color": "#EC4899", "linestyle": "-",  "linewidth": 2.6, "label": "LSTM (수익률·direct)"},
+    "LSTM-REB":     {"color": "#10B981", "linestyle": "-",  "linewidth": 2.4, "label": "LSTM + R-ONE 정규화"},
 }
 
-ALL_MODELS = ["MA-12", "ARIMA", "LSTM", "LSTM-REB"]
+# 그림 표시 순서 — 결과에 존재하는 모델만 자동 필터링됨(없으면 미표시).
+ALL_MODELS = [
+    "MA-12", "ARIMA", "ARIMA-ND",
+    "LSTM", "LSTM-RET", "LSTM-DIR", "LSTM-RET-DIR", "LSTM-REB",
+]
 
 
 def plot_forecast(cid: int, name: str):
@@ -103,7 +115,16 @@ def plot_forecast(cid: int, name: str):
     # 모델별 예측 오버레이
     test_t = test["t"].to_numpy()
     # 파일명 매핑: "MA-12" → "ma12", "LSTM-REB" → "lstm_reb"
-    file_suffix = {"MA-12": "ma12", "ARIMA": "arima", "LSTM": "lstm", "LSTM-REB": "lstm_reb"}
+    file_suffix = {
+        "MA-12": "ma12",
+        "ARIMA": "arima",
+        "ARIMA-ND": "arima_nd",
+        "LSTM": "lstm",
+        "LSTM-RET": "lstm_ret",
+        "LSTM-DIR": "lstm_dir",
+        "LSTM-RET-DIR": "lstm_ret_dir",
+        "LSTM-REB": "lstm_reb",
+    }
     for model_key in ALL_MODELS:
         pred_csv = PRED_DIR / f"{cid}_{file_suffix[model_key]}.csv"
         if not pred_csv.exists():

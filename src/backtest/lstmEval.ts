@@ -18,14 +18,28 @@
  *   백테스트 정책: train 마지막 ym 의 index 만 사용 (운영 시뮬레이션, 보수적)
  */
 
-import { buildTrainExamples, type MonthlyPoint } from '../data/preprocess';
-import { trainLstm, predictNext } from '../models/lstm';
+import {
+  buildTrainExamples,
+  buildReturnExamples,
+  buildDirectExamples,
+  type MonthlyPoint,
+} from '../data/preprocess';
+import {
+  trainLstm,
+  trainLstmMulti,
+  trainLstmMV,
+  predictNext,
+  predictDirect,
+  predictDirectMV,
+} from '../models/lstm';
 import {
   preloadIndex,
   normalizeSeries,
   denormalizePredictions,
   getNearestIndex,
 } from '../data/rebNormalize';
+import { preloadMacro, preloadUnsold } from '../data/fetchFeatures';
+import { buildMultivarExamples } from '../data/featurePanel';
 
 export interface LstmForecast {
   /** train 마지막 시점부터 1..horizon 개월 후 예측 (만원/㎡) */
@@ -49,6 +63,8 @@ export interface LstmEvalOpts {
   epochs?: number;
   /** R-ONE 정규화 활성화 시 시군구코드 필요 */
   reb?: { sigunguCode: string };
+  /** 실험 1 — 로그수익률 공간 학습 (표현 문제 격리). reb 와 배타. */
+  returnsSpace?: boolean;
 }
 
 export async function predictLstm(
@@ -63,6 +79,11 @@ export async function predictLstm(
     throw new Error(
       `LSTM needs ≥${window + 4} months train, got ${train.length}`,
     );
+  }
+
+  // 실험 1 — 로그수익률 공간 (레벨 경로와 완전 분리, reb 무시)
+  if (opts?.returnsSpace) {
+    return predictLstmReturns(train, horizon, window, epochs);
   }
 
   /* ─── R-ONE 정규화 (선택) ─── */
@@ -137,4 +158,177 @@ export async function predictLstm(
     rebCoverage,
     rebIndexFactor: rebApplied ? rebIndexFactor : undefined,
   };
+}
+
+/**
+ * 실험 1 — 로그수익률 공간 LSTM (표현 문제 격리).
+ *
+ * 레벨 경로(predictLstm 본문)와 모든 셋업(단지·horizon·epochs·recursive 구조)을
+ * 동일하게 유지하고 **표현만** 가격 레벨 → 로그수익률로 바꾼다.
+ *   1) buildReturnExamples 로 r_t = ln(p_t)-ln(p_{t-1}) 를 z-score 하여 학습
+ *   2) train 마지막 window 개월의 z-수익률을 시드로 recursive 예측
+ *   3) 예측 z-수익률 → 수익률 복원 → prevPrice × exp(ret) 로 레벨 누적 복원
+ *
+ * 가설: LSTM 패배가 "표현 문제"라면, 이 행(LSTM-RET)의 MAPE 가 레벨 LSTM 대비
+ *       급락(→ ARIMA 수준)해야 한다. recursive 누적(범인 B)은 그대로 남으므로
+ *       완전 동률이 아니면 direct multi-horizon(실험 3)을 추가 검증.
+ */
+async function predictLstmReturns(
+  train: MonthlyPoint[],
+  horizon: number,
+  window: number,
+  epochs: number,
+): Promise<LstmForecast> {
+  const { examples, scale, zReturns } = buildReturnExamples(train, window, 1);
+  if (examples.length < 8) {
+    throw new Error(
+      `not enough LSTM(returns) examples: ${examples.length} (need ≥8)`,
+    );
+  }
+
+  const { model, mae, mape } = await trainLstm(examples, {
+    windowSize: window,
+    epochs,
+  });
+
+  // 시드 = train 마지막 window 개월의 z-수익률 (scale 과 일관: zReturns 재사용)
+  const cursor = zReturns.slice(-window);
+
+  // recursive multi-step — 수익률 예측 → exp 누적으로 레벨 복원
+  let prevPrice = train[train.length - 1].pricePerM2;
+  const prediction: number[] = [];
+  for (let h = 0; h < horizon; h++) {
+    const nextZ = await predictNext(model, cursor);
+    const ret = nextZ * scale.std + scale.mean; // z → 로그수익률
+    prevPrice = prevPrice * Math.exp(ret);
+    prediction.push(prevPrice);
+    cursor.push(nextZ);
+    cursor.shift();
+  }
+
+  model.dispose();
+
+  return { prediction, trainMape: mape, trainMae: mae, scale };
+}
+
+/**
+ * 실험 3 — Direct multi-horizon LSTM (recursive 제거).
+ *
+ * 모델이 1..horizon 을 **한 번에** 예측하므로 자기예측 되먹임이 없다.
+ * 표현(returns)과 직교 → {레벨,수익률} × {recursive,direct} 2×2 비교 가능.
+ *   · returnsSpace=false → 레벨 z 복원
+ *   · returnsSpace=true  → 로그수익률 예측 후 basePrice 부터 exp 누적 복원
+ *
+ * 가설: 1313 처럼 recursive 에서 폭발한 단지가 direct 에서 안정화되면
+ *       fat-tail 의 주범이 범인 B(복리누적)임이 확정된다.
+ */
+export async function predictLstmDirect(
+  train: MonthlyPoint[],
+  horizon: number,
+  opts?: { window?: number; epochs?: number; returnsSpace?: boolean },
+): Promise<LstmForecast> {
+  const window = opts?.window ?? DEFAULT_WINDOW;
+  const epochs = opts?.epochs ?? DEFAULT_EPOCHS;
+  const returns = opts?.returnsSpace === true;
+
+  const { examples, scale, zSeries, basePrice } = buildDirectExamples(
+    train,
+    window,
+    horizon,
+    { returns },
+  );
+  if (examples.length < 8) {
+    throw new Error(
+      `not enough direct examples: ${examples.length} (need ≥8) ` +
+        `— train ${train.length}mo, window ${window}, horizon ${horizon}`,
+    );
+  }
+
+  const { model, mae, mape } = await trainLstmMulti(examples, {
+    windowSize: window,
+    epochs,
+    outputDim: horizon,
+  });
+
+  // 시드 = 마지막 window 개 z값, direct 1회 호출로 horizon 개 예측
+  const seed = zSeries.slice(-window);
+  const predZ = await predictDirect(model, seed); // 길이 horizon
+
+  let prediction: number[];
+  if (returns) {
+    // 누적 로그수익률 → exp 복원 (예측끼리 되먹이지 않음 — 모두 실제 입력 기반)
+    prediction = [];
+    let cum = 0;
+    for (let k = 0; k < horizon; k++) {
+      cum += predZ[k] * scale.std + scale.mean;
+      prediction.push(basePrice * Math.exp(cum));
+    }
+  } else {
+    prediction = predZ.map((z) => z * scale.std + scale.mean);
+  }
+
+  model.dispose();
+
+  return { prediction, trainMape: mape, trainMae: mae, scale };
+}
+
+/**
+ * 실험 — Multivariate Direct LSTM (2026-06-06, 학습환경 보강).
+ *
+ * 단변량 가격 한 줄(LSTM-RET-DIR)에 거시·공급·계절 공변량을 추가해
+ * "제대로 먹인 학습기가 ~8% 추세 천장을 깨는가"를 검증한다.
+ *   1) 공변량 로드(macro 전국 + unsold/reb 시군구)
+ *   2) buildMultivarExamples 로 [window × F] 패널 + 타깃(가격 로그수익률)
+ *   3) trainLstmMV 학습 → 마지막 윈도우로 direct 예측 → exp 누적 레벨 복원
+ *
+ * 표현·구조는 LSTM-RET-DIR 와 동일(로그수익률·direct) — 추가된 건 오직 공변량.
+ * 따라서 LSTM-RET-DIR 대비 개선분 = 공변량의 순수 기여.
+ */
+export async function predictLstmMultivar(
+  train: MonthlyPoint[],
+  horizon: number,
+  sigunguCode: string,
+  opts?: { window?: number; epochs?: number },
+): Promise<LstmForecast> {
+  const window = opts?.window ?? DEFAULT_WINDOW;
+  const epochs = opts?.epochs ?? DEFAULT_EPOCHS;
+
+  const [macro, unsold, reb] = await Promise.all([
+    preloadMacro(),
+    preloadUnsold(sigunguCode),
+    preloadIndex(sigunguCode),
+  ]);
+
+  const panel = buildMultivarExamples(train, window, horizon, {
+    macro,
+    unsold,
+    reb,
+  });
+  if (panel.examples.length < 8) {
+    throw new Error(
+      `not enough multivar examples: ${panel.examples.length} (need ≥8) ` +
+        `— train ${train.length}mo, window ${window}, horizon ${horizon}`,
+    );
+  }
+
+  const { model, mae, mape } = await trainLstmMV(panel.examples, {
+    windowSize: window,
+    epochs,
+    outputDim: horizon,
+    numFeatures: panel.numFeatures,
+  });
+
+  const predZ = await predictDirectMV(model, panel.seed); // 길이 horizon
+
+  // 누적 로그수익률 → exp 복원 (예측끼리 되먹이지 않음 — 모두 실제 입력 기반)
+  const prediction: number[] = [];
+  let cum = 0;
+  for (let k = 0; k < horizon; k++) {
+    cum += predZ[k] * panel.scale.std + panel.scale.mean;
+    prediction.push(panel.basePrice * Math.exp(cum));
+  }
+
+  model.dispose();
+
+  return { prediction, trainMape: mape, trainMae: mae, scale: panel.scale };
 }

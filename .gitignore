@@ -3,7 +3,10 @@ dist/
 .env
 .env.local
 *.log
+# 저장된 모델 가중치 아티팩트만 무시 — 소스 디렉토리 src/models/ 는 추적
 models/
+!src/models/
+!src/models/**
 .idea/
 .vscode/
 .DS_Store

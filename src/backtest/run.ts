@@ -39,7 +39,7 @@ import { toMonthlySeries } from '../data/preprocess';
 import { splitHoldout } from './holdout';
 import { selectTopComplexes, type BacktestComplex } from './selectComplexes';
 import { predictMa12 } from './ma12';
-import { predictLstm } from './lstmEval';
+import { predictLstm, predictLstmDirect, predictLstmMultivar } from './lstmEval';
 import { calcMetrics, type MetricResult } from './metrics';
 import { disconnect } from '../db';
 
@@ -48,6 +48,9 @@ const HORIZON = Number(process.env.BACKTEST_HORIZON) || 24;
 const MIN_TRAIN = Number(process.env.BACKTEST_MIN_TRAIN) || 36;
 const LSTM_EPOCHS = Number(process.env.BACKTEST_LSTM_EPOCHS) || 30;
 const REB_NORMALIZE = process.env.BACKTEST_REB_NORMALIZE === '1';
+const RETURNS_SPACE = process.env.BACKTEST_RETURNS_SPACE === '1';
+const DIRECT = process.env.BACKTEST_DIRECT === '1';
+const MULTIVAR = process.env.BACKTEST_MULTIVAR === '1';
 
 const REPORTS_DIR = path.resolve(process.cwd(), 'reports');
 const SERIES_DIR = path.join(REPORTS_DIR, 'series');
@@ -58,7 +61,14 @@ interface BacktestRowResult {
   name: string;
   sigunguCode: string;
   legalDong: string;
-  model: 'MA-12' | 'LSTM' | 'LSTM-REB';
+  model:
+    | 'MA-12'
+    | 'LSTM'
+    | 'LSTM-REB'
+    | 'LSTM-RET'
+    | 'LSTM-DIR'
+    | 'LSTM-RET-DIR'
+    | 'LSTM-MV';
   horizon: number;
   metrics: MetricResult;
 }
@@ -176,6 +186,124 @@ async function runOne(c: BacktestComplex): Promise<BacktestRowResult[]> {
     metrics: lstmMetrics,
   });
 
+  // 5-b) LSTM-RET (실험 1 — 로그수익률 공간, 선택적)
+  //      레벨 LSTM 과 모든 셋업 동일, 표현만 차분(로그수익률)으로 교체한 클린 A/B.
+  if (RETURNS_SPACE) {
+    console.log(`    [LSTM-RET] training (epochs=${LSTM_EPOCHS}, returns-space)...`);
+    try {
+      const lstmRet = await predictLstm(train, horizon, {
+        epochs: LSTM_EPOCHS,
+        returnsSpace: true,
+      });
+      const lstmRetMetrics = calcMetrics(actual, lstmRet.prediction);
+      console.log(
+        `    [LSTM-RET] MAPE=${lstmRetMetrics.mape.toFixed(2)}% ` +
+          `RMSE=${lstmRetMetrics.rmse.toFixed(2)} R²=${lstmRetMetrics.r2.toFixed(3)} ` +
+          `(trainMAPE=${lstmRet.trainMape.toFixed(2)}%)`,
+      );
+      writeCsv(
+        path.join(PRED_DIR, `${c.id}_lstm_ret.csv`),
+        'ym,predicted',
+        testYms.map(
+          (ym, i) => `${ym},${lstmRet.prediction[i].toFixed(4)}`,
+        ),
+      );
+      results.push({
+        complexId: c.id,
+        name: c.name,
+        sigunguCode: c.sigunguCode,
+        legalDong: c.legalDong,
+        model: 'LSTM-RET',
+        horizon,
+        metrics: lstmRetMetrics,
+      });
+    } catch (e) {
+      console.warn(
+        `    [LSTM-RET] 실패 — ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  // 5-c) LSTM-DIR / LSTM-RET-DIR (실험 3 — direct multi-horizon, 선택적)
+  //      recursive 되먹임 제거. 레벨·수익률 두 표현 모두 평가 → 2×2 비교 완성.
+  if (DIRECT) {
+    const directVariants: Array<{
+      model: 'LSTM-DIR' | 'LSTM-RET-DIR';
+      suffix: string;
+      returnsSpace: boolean;
+    }> = [
+      { model: 'LSTM-DIR', suffix: 'lstm_dir', returnsSpace: false },
+      { model: 'LSTM-RET-DIR', suffix: 'lstm_ret_dir', returnsSpace: true },
+    ];
+    for (const v of directVariants) {
+      console.log(`    [${v.model}] training (epochs=${LSTM_EPOCHS}, direct)...`);
+      try {
+        const dir = await predictLstmDirect(train, horizon, {
+          epochs: LSTM_EPOCHS,
+          returnsSpace: v.returnsSpace,
+        });
+        const dirMetrics = calcMetrics(actual, dir.prediction);
+        console.log(
+          `    [${v.model}] MAPE=${dirMetrics.mape.toFixed(2)}% ` +
+            `RMSE=${dirMetrics.rmse.toFixed(2)} R²=${dirMetrics.r2.toFixed(3)}`,
+        );
+        writeCsv(
+          path.join(PRED_DIR, `${c.id}_${v.suffix}.csv`),
+          'ym,predicted',
+          testYms.map((ym, i) => `${ym},${dir.prediction[i].toFixed(4)}`),
+        );
+        results.push({
+          complexId: c.id,
+          name: c.name,
+          sigunguCode: c.sigunguCode,
+          legalDong: c.legalDong,
+          model: v.model,
+          horizon,
+          metrics: dirMetrics,
+        });
+      } catch (e) {
+        console.warn(
+          `    [${v.model}] 실패 — ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+
+  // 5-d) LSTM-MV (실험 — multivariate direct, 선택적)
+  //      LSTM-RET-DIR 와 표현·구조 동일(로그수익률·direct), 거시·공급·계절 공변량만 추가.
+  //      LSTM-RET-DIR 대비 개선분 = 공변량의 순수 기여.
+  if (MULTIVAR) {
+    console.log(`    [LSTM-MV] training (epochs=${LSTM_EPOCHS}, multivar direct)...`);
+    try {
+      const mv = await predictLstmMultivar(train, horizon, c.sigunguCode, {
+        epochs: LSTM_EPOCHS,
+      });
+      const mvMetrics = calcMetrics(actual, mv.prediction);
+      console.log(
+        `    [LSTM-MV] MAPE=${mvMetrics.mape.toFixed(2)}% ` +
+          `RMSE=${mvMetrics.rmse.toFixed(2)} R²=${mvMetrics.r2.toFixed(3)}`,
+      );
+      writeCsv(
+        path.join(PRED_DIR, `${c.id}_lstm_mv.csv`),
+        'ym,predicted',
+        testYms.map((ym, i) => `${ym},${mv.prediction[i].toFixed(4)}`),
+      );
+      results.push({
+        complexId: c.id,
+        name: c.name,
+        sigunguCode: c.sigunguCode,
+        legalDong: c.legalDong,
+        model: 'LSTM-MV',
+        horizon,
+        metrics: mvMetrics,
+      });
+    } catch (e) {
+      console.warn(
+        `    [LSTM-MV] 실패 — ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   // 6) LSTM-REB (R-ONE 정규화 적용, 선택적)
   if (REB_NORMALIZE) {
     console.log(`    [LSTM-REB] training (epochs=${LSTM_EPOCHS}, sigungu=${c.sigunguCode})...`);
@@ -223,7 +351,9 @@ async function main() {
   ensureDirs();
   console.log(
     `[backtest] starting: topN=${TOP_N} horizon=${HORIZON} ` +
-      `minTrain=${MIN_TRAIN} lstmEpochs=${LSTM_EPOCHS} reb=${REB_NORMALIZE ? 'ON' : 'OFF'}`,
+      `minTrain=${MIN_TRAIN} lstmEpochs=${LSTM_EPOCHS} ` +
+      `reb=${REB_NORMALIZE ? 'ON' : 'OFF'} returns=${RETURNS_SPACE ? 'ON' : 'OFF'} ` +
+      `direct=${DIRECT ? 'ON' : 'OFF'} multivar=${MULTIVAR ? 'ON' : 'OFF'}`,
   );
 
   const complexes = await selectTopComplexes({

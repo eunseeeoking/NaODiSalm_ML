@@ -156,3 +156,111 @@ export function buildTrainExamples(
   }
   return { examples, scale: { mean, std } };
 }
+
+/**
+ * 실험 1 — 로그수익률 공간 학습 examples (표현 문제 격리).
+ *
+ * buildTrainExamples 는 가격 *레벨* 을 z-score 한다 → 추세(비정상성)가 남아
+ * LSTM 이 휘둘린다. 여기서는 r_t = ln(p_t) - ln(p_{t-1}) 로 변환해 학습하므로
+ * ARIMA 의 차분(d=1) 과 동일하게 추세를 수학적으로 제거한다.
+ *
+ * 예측 결과는 *수익률* 이므로, 호출측(lstmEval)에서 train 마지막 실제가에
+ * exp() 누적 적용해 레벨로 복원한다. zReturns 를 함께 반환해 시드 윈도우를
+ * scale 과 일관되게 만든다.
+ */
+export function buildReturnExamples(
+  series: MonthlyPoint[],
+  windowSize: number,
+  horizon: number,
+): {
+  examples: TrainExample[];
+  scale: { mean: number; std: number };
+  zReturns: number[];
+} {
+  const prices = series.map((p) => p.pricePerM2);
+  // 수익률은 가격보다 1개 짧다 → +1 여유 필요
+  if (prices.length < windowSize + horizon + 1)
+    return { examples: [], scale: { mean: 0, std: 1 }, zReturns: [] };
+
+  // 로그수익률 (forward-fill 평탄구간은 자연히 0)
+  const returns: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    const a = prices[i - 1];
+    const b = prices[i];
+    returns.push(a > 0 && b > 0 ? Math.log(b) - Math.log(a) : 0);
+  }
+
+  // 수익률 z-score (이미 정상성에 가깝지만 학습 안정화용)
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance =
+    returns.reduce((s, v) => s + (v - mean) ** 2, 0) / returns.length;
+  const std = Math.sqrt(variance) || 1;
+  const zReturns = returns.map((v) => (v - mean) / std);
+
+  const examples: TrainExample[] = [];
+  for (let i = 0; i + windowSize + horizon <= zReturns.length; i++) {
+    examples.push({
+      input: zReturns.slice(i, i + windowSize),
+      target: zReturns[i + windowSize + horizon - 1],
+    });
+  }
+  return { examples, scale: { mean, std }, zReturns };
+}
+
+/**
+ * 실험 3 — Direct multi-horizon examples (표현 무관, recursive 제거).
+ *
+ * target 이 스칼라가 아니라 **다음 horizon 개 값 벡터** — 모델이 1..horizon 을
+ * 한 번에 예측하므로 자기예측 되먹임(recursive 복리누적)이 없다.
+ *
+ *  - returns=false: 가격 레벨 z-score 공간 (z 복원으로 레벨)
+ *  - returns=true : 로그수익률 z-score 공간 (basePrice 부터 exp 누적으로 레벨 복원)
+ *
+ * zSeries(정규화 전체 배열)와 basePrice 를 함께 반환 → 호출측이 시드 윈도우와
+ * 복원 기준가를 scale 과 일관되게 잡는다.
+ */
+export function buildDirectExamples(
+  series: MonthlyPoint[],
+  windowSize: number,
+  horizon: number,
+  opts?: { returns?: boolean },
+): {
+  examples: { input: number[]; target: number[] }[];
+  scale: { mean: number; std: number };
+  zSeries: number[];
+  basePrice: number;
+} {
+  const prices = series.map((p) => p.pricePerM2);
+  const returns = opts?.returns === true;
+  const basePrice = prices.length > 0 ? prices[prices.length - 1] : 0;
+
+  // 정규화 대상 raw 배열 (레벨 또는 로그수익률)
+  let raw: number[];
+  if (returns) {
+    raw = [];
+    for (let i = 1; i < prices.length; i++) {
+      const a = prices[i - 1];
+      const b = prices[i];
+      raw.push(a > 0 && b > 0 ? Math.log(b) - Math.log(a) : 0);
+    }
+  } else {
+    raw = prices;
+  }
+
+  if (raw.length < windowSize + horizon)
+    return { examples: [], scale: { mean: 0, std: 1 }, zSeries: [], basePrice };
+
+  const mean = raw.reduce((a, b) => a + b, 0) / raw.length;
+  const variance = raw.reduce((s, v) => s + (v - mean) ** 2, 0) / raw.length;
+  const std = Math.sqrt(variance) || 1;
+  const zSeries = raw.map((v) => (v - mean) / std);
+
+  const examples: { input: number[]; target: number[] }[] = [];
+  for (let i = 0; i + windowSize + horizon <= zSeries.length; i++) {
+    examples.push({
+      input: zSeries.slice(i, i + windowSize),
+      target: zSeries.slice(i + windowSize, i + windowSize + horizon),
+    });
+  }
+  return { examples, scale: { mean, std }, zSeries, basePrice };
+}
